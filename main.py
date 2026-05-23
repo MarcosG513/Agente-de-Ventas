@@ -5,6 +5,7 @@ import json
 import httpx
 import sys
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Cargar variables del entorno
 load_dotenv()
@@ -194,12 +195,7 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
             model = genai.GenerativeModel("gemini-2.5-flash")
             
             # Pasar bytes y prompt
-            prompt = (
-                "Actúa como auditor financiero de Matelu Store. Analiza esta imagen. "
-                "¿Es un comprobante válido de transferencia bancaria (Nequi, Bancolombia, etc.)? "
-                "Responde de forma ultra concisa (máximo 2 líneas) indicando si parece un comprobante "
-                "real o si es un archivo no relacionado (ej. un logo, una carta, etc.)."
-            )
+            prompt = f"Actúa como auditor financiero de Matelu Store. Hoy es {datetime.now().strftime('%d de %B de %Y')}. Analiza esta imagen. ¿Es un comprobante válido de transferencia bancaria (Nequi, Bancolombia, etc.)? Responde de forma ultra concisa (máximo 2 líneas). Usa la fecha de hoy que te acabo de dar para evaluar lógicamente cualquier fecha en la imagen. Si la fecha de la imagen es anterior o igual a hoy, es válida."
             
             image_part = {
                 "mime_type": "image/jpeg",
