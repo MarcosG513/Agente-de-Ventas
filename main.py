@@ -1,0 +1,456 @@
+import os
+import hmac
+import hashlib
+import json
+import httpx
+import sys
+from dotenv import load_dotenv
+
+# Cargar variables del entorno
+load_dotenv()
+
+from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks, Header, Query
+from agent_graph import get_compiled_graph
+from langchain_core.messages import HumanMessage, AIMessage
+from database import init_db, AsyncSessionLocal, Catalog, obtener_o_crear_cliente, actualizar_estado_cliente
+from sqlalchemy import select
+
+# Inicializar FastAPI
+app = FastAPI(title="Matelu Digital - API Omnicanal")
+
+# Configuración mediante variables de entorno
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+WHATSAPP_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
+VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "IA_matelu_2026")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
+APP_SECRET = os.environ.get("META_APP_SECRET", "")
+
+# Función auxiliar para imprimir de forma segura en consolas con codificaciones limitadas (como Windows CP1252)
+def safe_print(message: str):
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        try:
+            # Reintentar codificando en ascii reemplazando caracteres desconocidos
+            print(message.encode(sys.stdout.encoding or 'ascii', errors='replace').decode(sys.stdout.encoding or 'ascii'))
+        except Exception:
+            # Fallback definitivo a ignorar errores
+            print(message.encode('ascii', errors='replace').decode('ascii'))
+
+# --- EVENTOS DE INICIALIZACIÓN ---
+@app.on_event("startup")
+async def startup_event():
+    await init_db()
+    async with AsyncSessionLocal() as session:
+        # Precargar datos de prueba si está vacío
+        stmt = select(Catalog)
+        result = await session.execute(stmt)
+        if not result.scalars().first():
+            safe_print("Precargando catálogo de Google AI Pro...")
+            session.add_all([
+                Catalog(plan_id="g_ai_pro_5tb_1m", plan_name="Google AI Pro 5 TB", duration_months=1, price=8000.0, features="5TB Almacenamiento, Gemini Advanced. Facturación mensual regular."),
+                Catalog(plan_id="g_ai_pro_5tb_3m", plan_name="Google AI Pro 5 TB", duration_months=3, price=21000.0, features="5TB Almacenamiento, Gemini Advanced. (Equivale a 7,000 Pesos al mes)"),
+                Catalog(plan_id="g_ai_pro_5tb_6m", plan_name="Google AI Pro 5 TB", duration_months=6, price=36000.0, features="5TB Almacenamiento, Gemini Advanced. Ahorro del 25% vs plan mensual."),
+                Catalog(plan_id="g_ai_pro_5tb_12m", plan_name="Google AI Pro 5 TB", duration_months=12, price=50000.0, features="5TB Almacenamiento, Gemini Advanced. Ahorro de casi el 50% (Mejor valor)."),
+                Catalog(plan_id="g_ai_pro_5tb_18m", plan_name="Google AI Pro 5 TB", duration_months=18, price=70000.0, features="5TB Almacenamiento, Gemini Advanced. Máximo ahorro garantizado a largo plazo.")
+            ])
+            await session.commit()
+
+# --- CEREBRO ÚNICO ---
+async def procesar_inteligencia_agente(texto_usuario: str, nombre_usuario: str, plataforma: str) -> str:
+    """
+    Cerebro único que centraliza la lógica de procesamiento con el modelo y flujo de agentes.
+    Conecta directamente con la invocación de LangGraph/Gemini y utiliza el checkpointer de SQLite WAL.
+    """
+    safe_print(f">>> [CEREBRO ÚNICO] Procesando mensaje en plataforma: {plataforma}")
+    safe_print(f"    Usuario (ID): {nombre_usuario} | Texto: {texto_usuario}")
+    
+    try:
+        # 1. Verificar si el cliente está en modo silencio
+        cliente = await obtener_o_crear_cliente(nombre_usuario)
+        if cliente.estado == 'esperando_humano':
+            safe_print(f"Modo Silencio: Cliente {nombre_usuario} esperando humano. Abortando procesamiento.")
+            return ""
+
+        # 2. Conexión segura a SQLite para LangGraph checkpointer
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        
+        async with aiosqlite.connect("ventas.db", isolation_level=None) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("PRAGMA journal_mode=WAL")
+                await cursor.execute("PRAGMA synchronous=NORMAL")
+                await cursor.execute("PRAGMA busy_timeout=60000")
+                await cursor.execute("PRAGMA temp_store=MEMORY")
+            
+            memory = AsyncSqliteSaver(conn)
+            await memory.setup()
+            graph = get_compiled_graph(memory)
+            
+            config = {"configurable": {"thread_id": nombre_usuario}}
+            
+            # Inicializar o actualizar el estado del agente
+            state_update = {
+                "phone_number": nombre_usuario,
+                "audio_media_id": None,
+                "image_media_id": None,
+                "messages": [HumanMessage(content=texto_usuario)]
+            }
+            
+            # Invocar al agente de LangGraph
+            final_state = await graph.ainvoke(state_update, config=config)
+            
+            # Extraer la respuesta generada por el LLM
+            messages_out = final_state.get("messages", [])
+            if messages_out:
+                last_msg = messages_out[-1]
+                if isinstance(last_msg, AIMessage) and last_msg.content:
+                    return last_msg.content
+            
+            return "Dame un momento, estoy actualizando mi base de datos de licencias en este instante."
+
+    except Exception as e:
+        safe_print(f"Error en procesar_inteligencia_agente: {str(e)}")
+        return "Dame un momento, estoy actualizando mi base de datos de licencias en este instante."
+
+# --- LÓGICA ANTERIOR DE LANGGRAPH (PRESERVADA PARA REFERENCIA/USO FUTURO) ---
+def verify_meta_signature(payload: bytes, signature_header: str):
+    """
+    Valida la integridad del request mediante la verificación del hash HMAC provisto en el encabezado.
+    """
+    if not signature_header:
+        raise HTTPException(status_code=400, detail="El encabezado X-Hub-Signature-256 es requerido")
+    
+    parts = signature_header.split("=")
+    if len(parts) != 2 or parts[0] != "sha256":
+        raise HTTPException(status_code=400, detail="Formato de firma no válido")
+        
+    signature = parts[1]
+    
+    expected_signature = hmac.new(
+        APP_SECRET.encode("utf-8"),
+        msg=payload,
+        digestmod=hashlib.sha256
+    ).hexdigest()
+    
+    if not hmac.compare_digest(expected_signature, signature):
+        raise HTTPException(status_code=403, detail="Firma de Meta rechazada")
+
+# --- INTEGRACIÓN DE TELEGRAM ---
+async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, file_id: str):
+    """
+    Envía una alerta al grupo de auditoría (ADMIN_CHAT_ID) con la foto del comprobante,
+    un pre-análisis de Gemini Vision y dos botones inline interactivos para Aprobar o Rechazar el pago.
+    """
+    if not TELEGRAM_BOT_TOKEN or not ADMIN_CHAT_ID:
+        safe_print(">>> [AUDITORÍA] Error: TELEGRAM_BOT_TOKEN o ADMIN_CHAT_ID no configurados.")
+        return
+
+    # Pre-análisis de la imagen con Gemini Vision
+    respuesta_gemini = "Error al pre-analizar la imagen"
+    
+    try:
+        # TAREA 2: Descargar la imagen de Telegram
+        # 1. Obtener file_path
+        get_file_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+        async with httpx.AsyncClient() as client:
+            res_file = await client.get(get_file_url, timeout=10.0)
+            res_file.raise_for_status()
+            file_data = res_file.json()
+            file_path = file_data.get("result", {}).get("file_path")
+            
+        if file_path:
+            # 2. Descargar bytes de la imagen
+            download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+            async with httpx.AsyncClient() as client:
+                res_img = await client.get(download_url, timeout=15.0)
+                res_img.raise_for_status()
+                img_bytes = res_img.content
+                
+            # TAREA 3: Análisis con Gemini Vision usando google-generativeai
+            import google.generativeai as genai
+            genai.configure(api_key=GOOGLE_API_KEY)
+            
+            # Instanciar el modelo gemini-2.5-flash
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            
+            # Pasar bytes y prompt
+            prompt = (
+                "Actúa como auditor financiero de Matelu Store. Analiza esta imagen. "
+                "¿Es un comprobante válido de transferencia bancaria (Nequi, Bancolombia, etc.)? "
+                "Responde de forma ultra concisa (máximo 2 líneas) indicando si parece un comprobante "
+                "real o si es un archivo no relacionado (ej. un logo, una carta, etc.)."
+            )
+            
+            image_part = {
+                "mime_type": "image/jpeg",
+                "data": img_bytes
+            }
+            
+            # Llamar a Gemini Vision asíncronamente
+            response = await model.generate_content_async([prompt, image_part])
+            respuesta_gemini = response.text.strip()
+            safe_print(f">>> [AUDITORÍA] Pre-análisis de Gemini exitoso: {respuesta_gemini}")
+            
+    except Exception as e:
+        safe_print(f">>> [AUDITORÍA] Fallo pre-análisis de Gemini/Telegram (procediendo con fallback): {e}")
+        respuesta_gemini = "Error al pre-analizar la imagen"
+
+    # TAREA 4: Enviar alerta con la foto y los botones inline
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Aprobar", "callback_data": f"aprobar_{chat_id_cliente}"},
+                {"text": "❌ Rechazar", "callback_data": f"rechazar_{chat_id_cliente}"}
+            ]
+        ]
+    }
+    
+    caption_text = (
+        f"🚨 NUEVO COMPROBANTE RECIBIDO\n"
+        f"Cliente: {nombre_cliente}\n\n"
+        f"🤖 Análisis IA: {respuesta_gemini}\n\n"
+        f"Esperando tu revisión final..."
+    )
+    
+    payload = {
+        "chat_id": ADMIN_CHAT_ID,
+        "photo": file_id,
+        "caption": caption_text,
+        "reply_markup": reply_markup
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, json=payload, timeout=15.0)
+            if res.status_code == 200:
+                safe_print(f">>> [AUDITORÍA] Alerta enviada correctamente a administrador para cliente {nombre_cliente}.")
+            else:
+                safe_print(f">>> [AUDITORÍA] Error de API ({res.status_code}): {res.text}")
+    except Exception as e:
+        safe_print(f">>> [AUDITORÍA] Excepción al intentar enviar alerta al administrador: {e}")
+
+async def send_telegram_message(chat_id: str, texto: str):
+    """
+    Envía un mensaje de texto de vuelta al usuario en Telegram utilizando el bot token configurado.
+    """
+    if not TELEGRAM_BOT_TOKEN:
+        safe_print(">>> [TELEGRAM] Error: TELEGRAM_BOT_TOKEN no configurado en el entorno.")
+        return
+        
+    # Saneamiento de Markdown: en Telegram Markdown clásico (V1), bold se representa con * y no con **
+    saneado = texto.replace("**", "*")
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": saneado,
+        "parse_mode": "Markdown"
+    }
+    
+    # Envío asíncrono con httpx con bloque try/except robusto
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, json=payload, timeout=10.0)
+            if res.status_code == 200:
+                safe_print(f">>> [TELEGRAM] Mensaje enviado correctamente a chat_id: {chat_id}")
+            else:
+                safe_print(f">>> [TELEGRAM] Error de API ({res.status_code}): {res.text}")
+    except Exception as e:
+        safe_print(f">>> [TELEGRAM] Excepción al intentar enviar mensaje a chat_id {chat_id}: {e}")
+
+@app.post("/webhook/telegram")
+async def receive_telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Webhook para recibir actualizaciones de Telegram.
+    Extrae la información relevante, la procesa en el Cerebro Único y responde asíncronamente.
+    Retorna siempre HTTP 200 (status: ok) para cumplir las directrices de estabilidad.
+    """
+    safe_print(">>> [TELEGRAM WEBHOOK] POST /webhook/telegram recibido!")
+    try:
+        payload = await request.json()
+        
+        # 1. Detectar Callback Query (Clics de botones del Administrador)
+        if "callback_query" in payload:
+            callback_query = payload["callback_query"]
+            callback_query_id = callback_query.get("id")
+            data = callback_query.get("data", "")
+            
+            message = callback_query.get("message", {})
+            chat_id_admin = message.get("chat", {}).get("id")
+            message_id = message.get("message_id")
+            
+            if data and "_" in data:
+                action, chat_id_cliente = data.split("_", 1)
+                
+                async def procesar_callback():
+                    try:
+                        # Responder al cliente
+                        if action == "aprobar":
+                            await send_telegram_message(chat_id_cliente, "✅ Tu pago ha sido aprobado. En breve recibirás tu licencia.")
+                        elif action == "rechazar":
+                            await send_telegram_message(chat_id_cliente, "❌ Tu comprobante no es válido o es ilegible. Por favor, envíalo de nuevo.")
+                            
+                        # Confirmar el click al administrador
+                        answer_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+                        answer_payload = {
+                            "callback_query_id": callback_query_id,
+                            "text": "Auditoría procesada."
+                        }
+                        async with httpx.AsyncClient() as client:
+                            await client.post(answer_url, json=answer_payload, timeout=10.0)
+                            
+                        # Editar el mensaje original para remover botones y marcar como auditado
+                        edit_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageCaption"
+                        edit_payload = {
+                            "chat_id": chat_id_admin,
+                            "message_id": message_id,
+                            "caption": f"🚨 NUEVO COMPROBANTE RECIBIDO\nCliente: {chat_id_cliente}\n[AUDITADO]",
+                            "reply_markup": {"inline_keyboard": []}
+                        }
+                        async with httpx.AsyncClient() as client:
+                            await client.post(edit_url, json=edit_payload, timeout=10.0)
+                            
+                    except Exception as ex:
+                        safe_print(f"Error procesando callback de Telegram: {ex}")
+                        
+                background_tasks.add_task(procesar_callback)
+            return {"status": "ok"}
+            
+        # 2. Procesamiento de Mensajes normales
+        message = payload.get("message", {})
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+        
+        user_text = None
+        file_id = None
+        
+        if "text" in message:
+            user_text = message.get("text", "")
+        elif "photo" in message or "document" in message:
+            caption = message.get("caption", "").strip()
+            if caption:
+                user_text = f"[Imagen enviada] {caption}"
+            else:
+                user_text = "[El usuario ha enviado un archivo o imagen]"
+                
+            # Extraer file_id de mayor resolución si es foto
+            if "photo" in message and message.get("photo"):
+                file_id = message["photo"][-1].get("file_id")
+        
+        if chat_id and user_text is not None:
+            # Función asíncrona interna para ejecutar en segundo plano y no bloquear la respuesta HTTP
+            async def procesar_y_responder():
+                try:
+                    # Usamos chat_id como identificador único de hilo/cliente
+                    respuesta = await procesar_inteligencia_agente(user_text, str(chat_id), "telegram")
+                    if respuesta:
+                        await send_telegram_message(chat_id, respuesta)
+                        
+                    # Si se recibió foto, enviar alerta al grupo de auditoría
+                    if file_id:
+                        from_user = message.get("from", {})
+                        first_name = from_user.get("first_name", "Usuario")
+                        await enviar_alerta_auditoria(str(chat_id), first_name, file_id)
+                except Exception as ex:
+                    safe_print(f"Error procesando/enviando mensaje en Telegram background: {ex}")
+            
+            background_tasks.add_task(procesar_y_responder)
+        else:
+            safe_print(">>> [TELEGRAM WEBHOOK] Mensaje omitido (faltan datos: chat_id o texto/multimedia)")
+            
+    except Exception as e:
+        safe_print(f">>> [TELEGRAM WEBHOOK] Error general procesando webhook: {e}")
+        
+    return {"status": "ok"}
+
+
+# --- INTEGRACIÓN DE WHATSAPP (META) ---
+@app.get("/webhook/whatsapp")
+async def verify_whatsapp_webhook(
+    mode: str = Query(None, alias="hub.mode"),
+    token: str = Query(None, alias="hub.verify_token"),
+    challenge: str = Query(None, alias="hub.challenge")
+):
+    """
+    Validación exigida por Meta para registrar el webhook de WhatsApp Cloud API.
+    """
+    safe_print(">>> [WHATSAPP WEBHOOK] GET /webhook/whatsapp de verificación recibido")
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        safe_print(">>> [WHATSAPP WEBHOOK] Validación exitosa del token.")
+        return Response(content=challenge, status_code=200)
+    safe_print(">>> [WHATSAPP WEBHOOK] Fallo en la verificación del token.")
+    raise HTTPException(status_code=403, detail="Fallo en la verificación del token de webhook")
+
+@app.post("/webhook/whatsapp")
+async def receive_whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str = Header(None)
+):
+    """
+    Recibe los payloads de mensajes entrantes desde la API Cloud de WhatsApp.
+    Parsea el JSON anidado, extrae el número y texto del remitente, e invoca al Cerebro Único.
+    Retorna siempre HTTP 200 (status: ok).
+    """
+    safe_print(">>> [WHATSAPP WEBHOOK] POST /webhook/whatsapp recibido!")
+    raw_body = await request.body()
+    
+    # Validación HMAC si se configuró APP_SECRET
+    if APP_SECRET:
+        try:
+            verify_meta_signature(raw_body, x_hub_signature_256)
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            safe_print(f">>> [WHATSAPP WEBHOOK] Error validando firma HMAC: {e}")
+            raise HTTPException(status_code=403, detail="Firma inválida")
+
+    try:
+        data = json.loads(raw_body)
+        
+        # Parsing de la estructura anidada de Meta
+        for entry in data.get("entry", []):
+            for change in entry.get("changes", []):
+                value = change.get("value", {})
+                messages = value.get("messages", [])
+                
+                for msg in messages:
+                    phone_number = msg.get("from")
+                    if not phone_number:
+                        continue
+                        
+                    msg_type = msg.get("type")
+                    text_body = ""
+                    
+                    if msg_type == "text":
+                        text_body = msg.get("text", {}).get("body", "")
+                    elif msg_type == "image":
+                        text_body = "[Envié un comprobante de pago o imagen]"
+                    elif msg_type == "audio":
+                        text_body = "[Audio Recibido]"
+                    else:
+                        text_body = f"[Mensaje de tipo: {msg_type}]"
+                        
+                    if phone_number and text_body:
+                        # Procesamiento asíncrono en background
+                        async def procesar_y_loguear_whatsapp(num, msg_txt):
+                            try:
+                                respuesta = await procesar_inteligencia_agente(msg_txt, num, "whatsapp")
+                                if respuesta:
+                                    # TODO: Implementar la función de envío real utilizando WHATSAPP_TOKEN y WHATSAPP_PHONE_ID
+                                    safe_print(f">>> [TODO] Enviar respuesta a WhatsApp {num} usando WHATSAPP_TOKEN y WHATSAPP_PHONE_ID")
+                                    safe_print(f"    Respuesta que se enviará: {respuesta}")
+                            except Exception as ex:
+                                safe_print(f"Error procesando en WhatsApp background: {ex}")
+                                
+                        background_tasks.add_task(procesar_y_loguear_whatsapp, phone_number, text_body)
+                        
+    except Exception as e:
+        safe_print(f">>> [WHATSAPP WEBHOOK] Error general procesando webhook: {e}")
+        
+    return {"status": "ok"}
