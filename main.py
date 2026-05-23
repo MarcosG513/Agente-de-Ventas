@@ -169,6 +169,23 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
                 res_img.raise_for_status()
                 img_bytes = res_img.content
                 
+            # TAREA 3: PIPELINE DE COMPRESIÓN DE IMÁGENES
+            from PIL import Image
+            import io
+            
+            try:
+                img = Image.open(io.BytesIO(img_bytes))
+                img = img.convert("RGB")
+                img.thumbnail((800, 800))
+                out = io.BytesIO()
+                img.save(out, format="JPEG", quality=60)
+                compressed_bytes = out.getvalue()
+                safe_print(f">>> [AUDITORÍA] Imagen comprimida con PIL. De {len(img_bytes)} a {len(compressed_bytes)} bytes.")
+                image_data = compressed_bytes
+            except Exception as pil_err:
+                safe_print(f">>> [AUDITORÍA] Error al comprimir imagen con PIL (usando original): {pil_err}")
+                image_data = img_bytes
+
             # TAREA 3: Análisis con Gemini Vision usando google-generativeai
             import google.generativeai as genai
             genai.configure(api_key=GOOGLE_API_KEY)
@@ -186,7 +203,7 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
             
             image_part = {
                 "mime_type": "image/jpeg",
-                "data": img_bytes
+                "data": image_data
             }
             
             # Llamar a Gemini Vision asíncronamente

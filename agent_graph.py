@@ -47,7 +47,7 @@ class AgentState(TypedDict):
 
 # 2. Configuración del LLM Multimodal
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro",
+    model="gemini-2.5-flash",
     temperature=0.7,
 )
 
