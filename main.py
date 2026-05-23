@@ -269,14 +269,26 @@ async def send_telegram_message(chat_id: str, texto: str):
         "parse_mode": "Markdown"
     }
     
-    # Envío asíncrono con httpx con bloque try/except robusto
+    # Envío asíncrono con httpx con bloque try/except robusto y fallback para errores de formateo
     try:
         async with httpx.AsyncClient() as client:
             res = await client.post(url, json=payload, timeout=10.0)
-            if res.status_code == 200:
+            try:
+                res.raise_for_status()
                 safe_print(f">>> [TELEGRAM] Mensaje enviado correctamente a chat_id: {chat_id}")
-            else:
-                safe_print(f">>> [TELEGRAM] Error de API ({res.status_code}): {res.text}")
+            except httpx.HTTPStatusError as http_err:
+                if http_err.response.status_code == 400:
+                    safe_print(f">>> [TELEGRAM] Fallback a texto plano activado por error 400 (Markdown inválido) en chat_id: {chat_id}")
+                    # Enviar sin parse_mode
+                    payload_fallback = {
+                        "chat_id": chat_id,
+                        "text": saneado
+                    }
+                    res_fb = await client.post(url, json=payload_fallback, timeout=10.0)
+                    res_fb.raise_for_status()
+                    safe_print(f">>> [TELEGRAM] Mensaje enviado correctamente usando fallback de texto plano a chat_id: {chat_id}")
+                else:
+                    raise http_err
     except Exception as e:
         safe_print(f">>> [TELEGRAM] Excepción al intentar enviar mensaje a chat_id {chat_id}: {e}")
 
