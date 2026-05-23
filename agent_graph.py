@@ -351,4 +351,5 @@ def get_compiled_graph(memory):
         checkpointer=memory,
         interrupt_before=["human_validation"]
     )
+    # Prompt de agente y restricciones actualizados a la Generación 3 de Gemini
     return graph
