@@ -400,22 +400,24 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                             
                             confirmacion = f"¡Excelente! Veo que te interesa el plan de {plan_readable} de IA Pro. 🚀\n\n"
                         
-                        welcome_text = (
-                            f"{confirmacion}"
-                            f"🚀 ¡Hola! Bienvenido a Matelu Digital.\n"
-                            f"¿Listo para potenciar tu productividad y creatividad con Inteligencia Artificial Premium?\n\n"
-                            f"🌟 NUESTRAS SUSCRIPCIONES GOOGLE AI PRO (5 TB):\n"
-                            f"• 🥉 1 Mes: 8000.0 Pesos\n"
-                            f"• 🥈 3 Meses: 21000.0 Pesos\n"
-                            f"• 🥇 6 Meses: 36000.0 Pesos\n"
-                            f"• 🏆 1 Año: 50000.0 Pesos\n"
-                            f"• 💎 18 Meses: 70000.0 Pesos\n\n"
-                            f"💡 ¿Por qué dar el salto al plan Pro?\n"
-                            f"✅ Almacenamiento masivo: 5 TB para ti y hasta 5 personas más.\n"
-                            f"✅ Memoria de genio: Lee, analiza y recuerda hasta 700 páginas de un solo golpe.\n"
-                            f"✅ Tu asistente 24/7: IA integrada directamente en tu Gmail, Docs y Sheets.\n\n"
-                            f"👉 ¿Con cuál de estos planes te gustaría empezar a trabajar sin límites hoy?"
-                        )
+                        welcome_text = f"""{confirmacion}🚀 ¡Hola! Bienvenido a Matelu Digital.
+¿Listo para potenciar tu productividad y creatividad con Ingeniería de Inteligencia Artificial Avanzada?
+
+🌟 NUESTRAS SUSCRIPCIONES GOOGLE AI PRO (5 TB):
+
+• 🥉 1 Mes: 8,000 Pesos
+• 🥈 3 Meses: 21,000 Pesos
+• 🥇 6 Meses: 36,000 Pesos
+• 🏆 1 Año: 50,000 Pesos (Mejor Valor)
+• 💎 18 Meses: 70,000 Pesos (Ahorro Máximo)
+
+💡 ¿Por qué dar el salto al plan Pro con nosotros?
+✅ Almacenamiento masivo (5 TB / 5000 GB): Un almacén digital familiar masivo, listo para usar y compartible con hasta 5 personas.
+✅ Memoria de genio (1M tokens): Capacidad drástica de contexto. Tu IA puede leer, analizar y recordar un libro entero de 700 páginas o códigos de programación completos en una sola charla.
+✅ IA de Asistente a Colega de Trabajo: Integración total nativa dentro de tu Gmail, Docs, Sheets y Vids. Además, incluye el agente autónomo Daily Brief para organizar tu bandeja de entrada y calendario cada mañana.
+✅ Estudio de Creación Profesional: Acceso a herramientas creativas de última generación para generar videos profesionales desde cero (Veo), componer imágenes fotorrealistas y análisis avanzado en NotebookLM (hasta 300 fuentes).
+
+👉 ¿Con cuál de estos planes te gustaría empezar a trabajar sin límites hoy?"""
                         
                         await send_telegram_message(str(chat_id), welcome_text)
                     else:
