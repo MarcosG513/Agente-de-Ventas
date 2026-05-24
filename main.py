@@ -50,6 +50,9 @@ def safe_print(message: str):
 @app.on_event("startup")
 async def startup_event():
     await init_db()
+    safe_print(f"Startup: WHATSAPP_PHONE_ID cargado = '{WHATSAPP_PHONE_ID}'")
+    token_preview = f"{WHATSAPP_TOKEN[:10]}..." if WHATSAPP_TOKEN else "VACÍO"
+    safe_print(f"Startup: WHATSAPP_TOKEN cargado (prefijo) = '{token_preview}' (longitud={len(WHATSAPP_TOKEN) if WHATSAPP_TOKEN else 0})")
     async with AsyncSessionLocal() as session:
         # Precargar datos de prueba si está vacío
         stmt = select(Catalog)
@@ -630,6 +633,7 @@ async def receive_whatsapp_webhook(
         for entry in data.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
+                recipient_phone_id = value.get("metadata", {}).get("phone_number_id")
                 messages = value.get("messages", [])
                 
                 for msg in messages:
@@ -655,7 +659,7 @@ async def receive_whatsapp_webhook(
                         
                     if phone_number and text_body:
                         # Procesamiento asíncrono en background
-                        async def procesar_y_loguear_whatsapp(num, msg_txt, image_media_id=None, audio_media_id=None):
+                        async def procesar_y_loguear_whatsapp(num, msg_txt, image_media_id=None, audio_media_id=None, phone_id=None):
                             try:
                                 # 1. Verificar si el cliente está en modo silencio/pausa
                                 cliente = await obtener_o_crear_cliente(num)
@@ -674,7 +678,7 @@ async def receive_whatsapp_webhook(
                                 )
                                 if respuesta:
                                     from whatsapp_utils import enviar_mensaje_whatsapp
-                                    exito = await enviar_mensaje_whatsapp(num, respuesta)
+                                    exito = await enviar_mensaje_whatsapp(num, respuesta, phone_number_id=phone_id)
                                     if exito:
                                         safe_print(f">>> [WHATSAPP] Mensaje enviado a {num}")
                                     else:
@@ -682,7 +686,8 @@ async def receive_whatsapp_webhook(
                             except Exception as ex:
                                 safe_print(f"Error procesando en WhatsApp background: {ex}")
                                 
-                        background_tasks.add_task(procesar_y_loguear_whatsapp, phone_number, text_body, img_id, aud_id)
+                        background_tasks.add_task(procesar_y_loguear_whatsapp, phone_number, text_body, img_id, aud_id, recipient_phone_id)
+
 
                         
     except Exception as e:

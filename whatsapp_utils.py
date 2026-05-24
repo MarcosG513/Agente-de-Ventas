@@ -43,19 +43,20 @@ async def descargar_imagen_whatsapp(image_id: str) -> str:
     return base64.b64encode(image_bytes).decode('utf-8')
 
 
-async def enviar_mensaje_whatsapp(to_phone: str, text: str) -> bool:
+async def enviar_mensaje_whatsapp(to_phone: str, text: str, phone_number_id: str = None) -> bool:
     """
     Envía un mensaje de texto al cliente vía WhatsApp Cloud API.
     Implementa reintento exponencial en caso de fallo.
     """
     import asyncio
-    whatsapp_phone_id = os.environ.get("WHATSAPP_PHONE_ID", "")
+    whatsapp_phone_id = phone_number_id or os.environ.get("WHATSAPP_PHONE_ID", "")
     whatsapp_token = os.environ.get("WHATSAPP_TOKEN", "")
     
     if not whatsapp_phone_id or not whatsapp_token:
         print(">>> [WHATSAPP UTILS] WHATSAPP_PHONE_ID o WHATSAPP_TOKEN no configurados en las variables de entorno.")
         return False
         
+    print(f">>> [WHATSAPP UTILS] Enviando mensaje a {to_phone} usando phone_number_id: '{whatsapp_phone_id}'")
     url = f"https://graph.facebook.com/v18.0/{whatsapp_phone_id}/messages"
     headers = {
         "Authorization": f"Bearer {whatsapp_token}",
