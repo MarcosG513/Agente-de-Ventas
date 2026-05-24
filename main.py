@@ -233,8 +233,8 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
     reply_markup = {
         "inline_keyboard": [
             [
-                {"text": "✅ Aprobar", "callback_data": f"aprobar_{chat_id_cliente}"},
-                {"text": "❌ Rechazar", "callback_data": f"rechazar_{chat_id_cliente}"}
+                {"text": "✅ Aprobar", "callback_data": f"aprobar_tg_{chat_id_cliente}"},
+                {"text": "❌ Rechazar", "callback_data": f"rechazar_tg_{chat_id_cliente}"}
             ]
         ]
     }
@@ -263,10 +263,111 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
     except Exception as e:
         safe_print(f">>> [AUDITORÍA] Excepción al intentar enviar alerta al administrador: {e}")
 
+
+async def enviar_alerta_auditoria_whatsapp(chat_id_cliente: str, nombre_cliente: str, image_media_id: str):
+    """
+    Descarga la imagen del comprobante desde WhatsApp, la analiza con Gemini Vision
+    y la envía al grupo de Telegram del administrador (ADMIN_CHAT_ID) con botones inline.
+    """
+    if not TELEGRAM_BOT_TOKEN or not ADMIN_CHAT_ID:
+        safe_print(">>> [AUDITORÍA WA] Error: TELEGRAM_BOT_TOKEN o ADMIN_CHAT_ID no configurados.")
+        return
+
+    respuesta_gemini = "Error al pre-analizar la imagen"
+    image_data = None
+    
+    try:
+        from whatsapp_utils import descargar_imagen_whatsapp
+        import base64
+        
+        image_b64 = await descargar_imagen_whatsapp(image_media_id)
+        image_bytes = base64.b64decode(image_b64)
+        
+        from PIL import Image
+        import io
+        
+        try:
+            img = Image.open(io.BytesIO(image_bytes))
+            img = img.convert("RGB")
+            img.thumbnail((800, 800))
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=60)
+            image_data = out.getvalue()
+            safe_print(f">>> [AUDITORÍA WA] Imagen de WhatsApp comprimida con PIL. De {len(image_bytes)} a {len(image_data)} bytes.")
+        except Exception as pil_err:
+            safe_print(f">>> [AUDITORÍA WA] Error al comprimir imagen con PIL (usando original): {pil_err}")
+            image_data = image_bytes
+
+        # Análisis con Gemini Vision
+        import google.generativeai as genai
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        prompt = f"Actúa como auditor financiero de Matelu Store. Hoy es {datetime.now().strftime('%d de %B de %Y')}. Analiza esta imagen. ¿Es un comprobante válido de transferencia bancaria (Nequi, Bancolombia, etc.)? Responde de forma ultra concisa (máximo 2 líneas). Usa la fecha de hoy para evaluar la validez."
+        image_part = {
+            "mime_type": "image/jpeg",
+            "data": image_data
+        }
+        
+        response = await model.generate_content_async([prompt, image_part])
+        respuesta_gemini = response.text.strip()
+        safe_print(f">>> [AUDITORÍA WA] Pre-análisis de Gemini exitoso: {respuesta_gemini}")
+    except Exception as e:
+        safe_print(f">>> [AUDITORÍA WA] Fallo en pre-análisis o descarga de WhatsApp: {e}")
+        respuesta_gemini = "Error al pre-analizar la imagen o descargar de WhatsApp"
+
+    # Enviar a Telegram
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Aprobar", "callback_data": f"aprobar_wa_{chat_id_cliente}"},
+                {"text": "❌ Rechazar", "callback_data": f"rechazar_wa_{chat_id_cliente}"}
+            ]
+        ]
+    }
+    
+    caption_text = (
+        f"🚨 NUEVO COMPROBANTE RECIBIDO (WhatsApp)\n"
+        f"Cliente: {nombre_cliente}\n\n"
+        f"🤖 Análisis IA: {respuesta_gemini}\n\n"
+        f"Esperando tu revisión final..."
+    )
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            if image_data:
+                files = {"photo": ("photo.jpg", image_data, "image/jpeg")}
+                data = {
+                    "chat_id": ADMIN_CHAT_ID,
+                    "caption": caption_text,
+                    "reply_markup": json.dumps(reply_markup)
+                }
+                res = await client.post(url, data=data, files=files, timeout=20.0)
+            else:
+                url_text = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": ADMIN_CHAT_ID,
+                    "text": f"🚨 NUEVO COMPROBANTE RECIBIDO (WhatsApp) - Falló la descarga de la imagen\nCliente: {nombre_cliente}\n\nEsperando tu revisión final...",
+                    "reply_markup": reply_markup
+                }
+                res = await client.post(url_text, json=payload, timeout=10.0)
+                
+            if res.status_code == 200:
+                safe_print(f">>> [AUDITORÍA WA] Alerta enviada correctamente a administrador para cliente {nombre_cliente}.")
+            else:
+                safe_print(f">>> [AUDITORÍA WA] Error de API Telegram ({res.status_code}): {res.text}")
+    except Exception as e:
+        safe_print(f">>> [AUDITORÍA WA] Excepción al intentar enviar alerta al administrador: {e}")
+
 def detectar_intencion_humano(texto: str) -> bool:
-    palabras_clave = ["asesor", "persona", "hablar con alguien"]
+    palabras_clave = ["asesor", "persona", "hablar con alguien", "humano", "soporte", "atencion", "asistencia", "marcos"]
     texto_lower = texto.lower()
     return any(p in texto_lower for p in palabras_clave)
+
+def es_numero_whatsapp(user_id: str) -> bool:
+    cleaned = "".join(c for c in user_id if c.isdigit())
+    return len(cleaned) >= 10
 
 async def obtener_historial_y_resumir(chat_id: str) -> str:
     try:
@@ -370,15 +471,31 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
             message_id = message.get("message_id")
             
             if data and "_" in data:
-                action, chat_id_cliente = data.split("_", 1)
+                # Formato: accion_plataforma_chatid (ej: aprobar_tg_1234 o aprobar_wa_57300)
+                parts = data.split("_", 2)
+                if len(parts) == 3:
+                    action, platform, chat_id_cliente = parts
+                else:
+                    action, chat_id_cliente = data.split("_", 1)
+                    platform = "tg"
                 
                 async def procesar_callback():
                     try:
                         # Responder al cliente
                         if action == "aprobar":
-                            await send_telegram_message(chat_id_cliente, "✅ Tu pago ha sido aprobado. En breve recibirás tu licencia.")
+                            msg_ok = "✅ Tu pago ha sido aprobado. En breve recibirás tu licencia."
+                            if platform == "wa":
+                                from whatsapp_utils import enviar_mensaje_whatsapp
+                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_ok)
+                            else:
+                                await send_telegram_message(chat_id_cliente, msg_ok)
                         elif action == "rechazar":
-                            await send_telegram_message(chat_id_cliente, "❌ Tu comprobante no es válido o es ilegible. Por favor, envíalo de nuevo.")
+                            msg_fail = "❌ Tu comprobante no es válido o es ilegible. Por favor, envíalo de nuevo."
+                            if platform == "wa":
+                                from whatsapp_utils import enviar_mensaje_whatsapp
+                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_fail)
+                            else:
+                                await send_telegram_message(chat_id_cliente, msg_fail)
                             
                         # Confirmar el click al administrador
                         answer_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
@@ -394,7 +511,7 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         edit_payload = {
                             "chat_id": chat_id_admin,
                             "message_id": message_id,
-                            "caption": f"🚨 NUEVO COMPROBANTE RECIBIDO\nCliente: {chat_id_cliente}\n[AUDITADO]",
+                            "caption": f"🚨 NUEVO COMPROBANTE RECIBIDO ({'WhatsApp' if platform == 'wa' else 'Telegram'})\nCliente: {chat_id_cliente}\n[AUDITADO]",
                             "reply_markup": {"inline_keyboard": []}
                         }
                         async with httpx.AsyncClient() as client:
@@ -425,20 +542,52 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         target_user_id = parts[1].strip()
                         await actualizar_estado_cliente(target_user_id, 'bot_activo')
                         await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Asistente de IA reactivado para el cliente {target_user_id}.")
-                        await send_telegram_message(target_user_id, "🤖 El asistente de IA ha vuelto a activarse. ¿En qué más puedo ayudarte?")
+                        
+                        welcome_back = "🤖 El asistente de IA ha vuelto a activarse. ¿En qué más puedo ayudarte?"
+                        if es_numero_whatsapp(target_user_id):
+                            from whatsapp_utils import enviar_mensaje_whatsapp
+                            await enviar_mensaje_whatsapp(target_user_id, welcome_back)
+                        else:
+                            await send_telegram_message(target_user_id, welcome_back)
                     else:
                         await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /reanudar <user_id>")
                     return {"status": "ok"}
                     
-                elif user_text.strip().startswith("/pausar"):
+                elif user_text.strip().startswith("/pausar") or user_text.strip().startswith("/pausa"):
                     parts = user_text.strip().split(" ")
                     if len(parts) > 1:
                         target_user_id = parts[1].strip()
                         await actualizar_estado_cliente(target_user_id, 'pausado')
                         await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Asistente de IA pausado para el cliente {target_user_id}. Modo manual activo.")
-                        await send_telegram_message(target_user_id, "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento...")
+                        
+                        transition_msg = "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento..."
+                        if es_numero_whatsapp(target_user_id):
+                            from whatsapp_utils import enviar_mensaje_whatsapp
+                            await enviar_mensaje_whatsapp(target_user_id, transition_msg)
+                        else:
+                            await send_telegram_message(target_user_id, transition_msg)
                     else:
-                        await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /pausar <user_id>")
+                        await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /pausa <user_id>")
+                    return {"status": "ok"}
+                    
+                elif user_text.strip().startswith("/responder"):
+                    parts = user_text.strip().split(" ", 2)
+                    if len(parts) > 2:
+                        target_user_id = parts[1].strip()
+                        mensaje_responder = parts[2].strip()
+                        
+                        if es_numero_whatsapp(target_user_id):
+                            from whatsapp_utils import enviar_mensaje_whatsapp
+                            exito = await enviar_mensaje_whatsapp(target_user_id, mensaje_responder)
+                            if exito:
+                                await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado a WhatsApp {target_user_id}.")
+                            else:
+                                await send_telegram_message(str(ADMIN_CHAT_ID), f"❌ Falló el envío del mensaje a WhatsApp {target_user_id}.")
+                        else:
+                            await send_telegram_message(target_user_id, mensaje_responder)
+                            await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado a Telegram {target_user_id}.")
+                    else:
+                        await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /responder <user_id> <mensaje>")
                     return {"status": "ok"}
         elif "photo" in message or "document" in message:
             caption = message.get("caption", "").strip()
@@ -475,8 +624,16 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                                     target_client_id = match.group(1)
                                     
                             if target_client_id:
-                                await send_telegram_message(target_client_id, user_text)
-                                await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente {target_client_id}.")
+                                if es_numero_whatsapp(target_client_id):
+                                    from whatsapp_utils import enviar_mensaje_whatsapp
+                                    exito = await enviar_mensaje_whatsapp(target_client_id, user_text)
+                                    if exito:
+                                        await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente WhatsApp {target_client_id}.")
+                                    else:
+                                        await send_telegram_message(str(ADMIN_CHAT_ID), f"❌ Falló el envío del mensaje al cliente WhatsApp {target_client_id}.")
+                                else:
+                                    await send_telegram_message(target_client_id, user_text)
+                                    await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente Telegram {target_client_id}.")
                                 return
                     
                     # 3. Silenciar si está pausado o esperando humano
@@ -669,6 +826,26 @@ async def receive_whatsapp_webhook(
                                     admin_forward_text = f"💬 Mensaje de Cliente ({num}):\n{msg_txt}"
                                     await send_telegram_message(str(ADMIN_CHAT_ID), admin_forward_text)
                                     return
+
+                                # 1.2 Detección de intención de soporte humano
+                                if detectar_intencion_humano(msg_txt):
+                                    await actualizar_estado_cliente(num, 'pausado')
+                                    from whatsapp_utils import enviar_mensaje_whatsapp
+                                    await enviar_mensaje_whatsapp(num, "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento...", phone_number_id=phone_id)
+                                    resumen_contexto = await obtener_historial_y_resumir(num)
+                                    alerta_text = (
+                                        f"🚨 ALERTA DE INTERVENCIÓN 🚨\n"
+                                        f"👤 Cliente: Cliente ({num})\n"
+                                        f"📝 Contexto: {resumen_contexto}"
+                                    )
+                                    await send_telegram_message(str(ADMIN_CHAT_ID), alerta_text)
+                                    return
+
+                                # 1.5 Si se recibió una imagen de comprobante
+                                if image_media_id:
+                                    await actualizar_estado_cliente(num, 'esperando_humano')
+                                    # Disparar alerta de auditoría al administrador
+                                    await enviar_alerta_auditoria_whatsapp(num, f"Cliente WhatsApp ({num})", image_media_id)
 
                                 # 2. Procesar respuesta del agente
                                 respuesta = await procesar_inteligencia_agente(
