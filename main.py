@@ -26,7 +26,6 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "IA_matelu_2026")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
-ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", ADMIN_CHAT_ID)
 APP_SECRET = os.environ.get("META_APP_SECRET", "")
 
 # Función auxiliar para imprimir de forma segura en consolas con codificaciones limitadas (como Windows CP1252)
@@ -80,7 +79,7 @@ async def procesar_inteligencia_agente(texto_usuario: str, nombre_usuario: str, 
         import aiosqlite
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         
-        async with aiosqlite.connect("ventas.db", isolation_level=None) as conn:
+        async with aiosqlite.connect("historial.db", isolation_level=None) as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("PRAGMA journal_mode=WAL")
                 await cursor.execute("PRAGMA synchronous=NORMAL")
@@ -249,7 +248,7 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
         safe_print(f">>> [AUDITORÍA] Excepción al intentar enviar alerta al administrador: {e}")
 
 def detectar_intencion_humano(texto: str) -> bool:
-    palabras_clave = ["asesor", "persona", "soporte", "hablar con alguien", "humano", "atención humana", "ayuda humana"]
+    palabras_clave = ["asesor", "persona", "hablar con alguien"]
     texto_lower = texto.lower()
     return any(p in texto_lower for p in palabras_clave)
 
@@ -258,7 +257,7 @@ async def obtener_historial_y_resumir(chat_id: str) -> str:
         import aiosqlite
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         
-        async with aiosqlite.connect("ventas.db", isolation_level=None) as conn:
+        async with aiosqlite.connect("historial.db", isolation_level=None) as conn:
             memory = AsyncSqliteSaver(conn)
             await memory.setup()
             graph = get_compiled_graph(memory)
@@ -403,16 +402,16 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
             user_text = message.get("text", "")
             
             # Interceptar comandos de control del Admin
-            if str(chat_id) == str(ADMIN_TELEGRAM_ID):
+            if str(chat_id) == str(ADMIN_CHAT_ID):
                 if user_text.strip().startswith("/reanudar"):
                     parts = user_text.strip().split(" ")
                     if len(parts) > 1:
                         target_user_id = parts[1].strip()
                         await actualizar_estado_cliente(target_user_id, 'bot_activo')
-                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), f"✅ Asistente de IA reactivado para el cliente {target_user_id}.")
+                        await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Asistente de IA reactivado para el cliente {target_user_id}.")
                         await send_telegram_message(target_user_id, "🤖 El asistente de IA ha vuelto a activarse. ¿En qué más puedo ayudarte?")
                     else:
-                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), "⚠️ Formato incorrecto. Usa: /reanudar <user_id>")
+                        await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /reanudar <user_id>")
                     return {"status": "ok"}
                     
                 elif user_text.strip().startswith("/pausar"):
@@ -420,10 +419,10 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                     if len(parts) > 1:
                         target_user_id = parts[1].strip()
                         await actualizar_estado_cliente(target_user_id, 'pausado')
-                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), f"✅ Asistente de IA pausado para el cliente {target_user_id}. Modo manual activo.")
+                        await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Asistente de IA pausado para el cliente {target_user_id}. Modo manual activo.")
                         await send_telegram_message(target_user_id, "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento...")
                     else:
-                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), "⚠️ Formato incorrecto. Usa: /pausar <user_id>")
+                        await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /pausar <user_id>")
                     return {"status": "ok"}
         elif "photo" in message or "document" in message:
             caption = message.get("caption", "").strip()
@@ -444,7 +443,7 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                     cliente = await obtener_o_crear_cliente(str(chat_id))
                     
                     # 2. Si es el Administrador y está respondiendo a una alerta
-                    if str(chat_id) == str(ADMIN_TELEGRAM_ID):
+                    if str(chat_id) == str(ADMIN_CHAT_ID):
                         replied_message = message.get("reply_to_message", {})
                         replied_text = replied_message.get("text", "") or replied_message.get("caption", "")
                         if replied_text and "🚨 ALERTA DE INTERVENCIÓN 🚨" in replied_text:
@@ -453,11 +452,11 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                             if match:
                                 target_client_id = match.group(1)
                                 await send_telegram_message(target_client_id, user_text)
-                                await send_telegram_message(str(ADMIN_TELEGRAM_ID), f"✅ Mensaje enviado al cliente {target_client_id}.")
+                                await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente {target_client_id}.")
                                 return
                     
                     # 3. Silenciar si está pausado o esperando humano
-                    if cliente.estado in ['esperando_humano', 'pausado'] and str(chat_id) != str(ADMIN_TELEGRAM_ID):
+                    if cliente.estado in ['esperando_humano', 'pausado'] and str(chat_id) != str(ADMIN_CHAT_ID):
                         safe_print(f"Modo Silencio/Pausado: Cliente {chat_id} en estado '{cliente.estado}'. Ignorando respuesta automática.")
                         # Si envió foto, podemos seguir auditando (enviar al admin)
                         if file_id:
@@ -467,7 +466,7 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         return
 
                     # 4. Detección de intención de soporte humano
-                    if detectar_intencion_humano(user_text) and str(chat_id) != str(ADMIN_TELEGRAM_ID):
+                    if detectar_intencion_humano(user_text) and str(chat_id) != str(ADMIN_CHAT_ID):
                         # Cambiar estado a 'pausado'
                         await actualizar_estado_cliente(str(chat_id), 'pausado')
                         
@@ -486,7 +485,7 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                             f"👤 Cliente: {nombre_formateado}\n"
                             f"📝 Contexto: {resumen_contexto}"
                         )
-                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), alerta_text)
+                        await send_telegram_message(str(ADMIN_CHAT_ID), alerta_text)
                         return
                     
                     # 5. Manejo normal de /start y otros mensajes
