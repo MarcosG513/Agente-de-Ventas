@@ -280,7 +280,33 @@ async def procesar_comprobante(state: AgentState):
     
     await actualizar_estado_cliente(phone_number, 'esperando_humano')
 
-    respuesta_exito = "¡Recibí tu comprobante perfectamente! ✅ Ya envié la referencia al área de supervisión. En cuanto nos den luz verde, te libero tu acceso a Google AI Pro 5 TB por aquí mismo. ¿Te parece bien si te notifico apenas esté listo?"
+    # Intentar deducir la duración a partir del monto extraído
+    monto_str = resultado.monto or ""
+    duracion_str = ""
+    import re
+    numeros = re.findall(r'\d+', monto_str.replace('.', '').replace(',', '').replace(' ', ''))
+    if numeros:
+        try:
+            monto_num = int(numeros[0])
+            if 7000 <= monto_num <= 10000:
+                duracion_str = " por 1 mes"
+            elif 18000 <= monto_num <= 25000:
+                duracion_str = " por 3 meses"
+            elif 30000 <= monto_num <= 40000:
+                duracion_str = " por 6 meses"
+            elif 45000 <= monto_num <= 58000:
+                duracion_str = " por 12 meses"
+            elif 65000 <= monto_num <= 80000:
+                duracion_str = " por 18 meses"
+        except Exception:
+            pass
+
+    respuesta_exito = (
+        "¡Recibido! Ya tengo tu comprobante de pago. ✅\n\n"
+        f"Estamos procesando tu suscripción de Google AI Pro 5 TB{duracion_str} en este momento.\n\n"
+        "En breve te contactaremos directamente para la activación y para que comiences a disfrutar de todas las potentes herramientas. 🚀\n\n"
+        "¡Gracias por elegir Matelu Digital!"
+    )
 
     return {
         "messages": [AIMessage(content=respuesta_exito)],

@@ -53,6 +53,18 @@ async def startup_event():
     safe_print(f"Startup: WHATSAPP_PHONE_ID cargado = '{WHATSAPP_PHONE_ID}'")
     token_preview = f"{WHATSAPP_TOKEN[:10]}..." if WHATSAPP_TOKEN else "VACÍO"
     safe_print(f"Startup: WHATSAPP_TOKEN cargado (prefijo) = '{token_preview}' (longitud={len(WHATSAPP_TOKEN) if WHATSAPP_TOKEN else 0})")
+    
+    # Limpiar historial de checkpointer corrupto de +573004237790 para solucionar corrupción de desarrollo
+    try:
+        import aiosqlite
+        async with aiosqlite.connect(HISTORIAL_PATH) as conn:
+            await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", ("573004237790",))
+            await conn.execute("DELETE FROM writes WHERE thread_id = ?", ("573004237790",))
+            await conn.commit()
+            safe_print(">>> [STARTUP] Historial de checkpointer para thread 573004237790 limpiado con éxito.")
+    except Exception as e:
+        safe_print(f">>> [STARTUP] Error limpiando historial de checkpointer: {e}")
+
     async with AsyncSessionLocal() as session:
         # Precargar datos de prueba si está vacío
         stmt = select(Catalog)
@@ -486,14 +498,18 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                             msg_ok = "✅ Tu pago ha sido aprobado. En breve recibirás tu licencia."
                             if platform == "wa":
                                 from whatsapp_utils import enviar_mensaje_whatsapp
-                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_ok)
+                                cliente_db = await obtener_o_crear_cliente(chat_id_cliente)
+                                target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_ok, phone_number_id=target_phone_id)
                             else:
                                 await send_telegram_message(chat_id_cliente, msg_ok)
                         elif action == "rechazar":
-                            msg_fail = "❌ Tu comprobante no es válido o es ilegible. Por favor, envíalo de nuevo."
+                            msg_fail = "❌ Tu comprobante de pago no ha podido ser verificado o no es válido. Por favor, asegúrate de enviar el comprobante correcto y legible."
                             if platform == "wa":
                                 from whatsapp_utils import enviar_mensaje_whatsapp
-                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_fail)
+                                cliente_db = await obtener_o_crear_cliente(chat_id_cliente)
+                                target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_fail, phone_number_id=target_phone_id)
                             else:
                                 await send_telegram_message(chat_id_cliente, msg_fail)
                             
@@ -863,7 +879,6 @@ async def receive_whatsapp_webhook(
 
                                 # 1.5 Si se recibió una imagen de comprobante
                                 if image_media_id:
-                                    await actualizar_estado_cliente(num, 'esperando_humano')
                                     # Disparar alerta de auditoría al administrador
                                     await enviar_alerta_auditoria_whatsapp(num, f"Cliente WhatsApp ({num})", image_media_id)
 
