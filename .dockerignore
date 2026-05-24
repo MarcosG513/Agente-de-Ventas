@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+.env
+.env.example
+venv/
+env/
+.venv/
+*.db
+*.db-wal
+*.db-shm
+ventas.db
+historial.db

@@ -10,7 +10,8 @@ from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 from sqlalchemy import Integer, String, Float, DateTime, ForeignKey, Boolean, CheckConstraint, Index, event
 
 # Configuración de base de datos unificada
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./ventas.db")
+db_path = os.getenv("DB_PATH", "ventas.db")
+DATABASE_URL = f"sqlite+aiosqlite:///{db_path}"
 
 engine = create_async_engine(
     DATABASE_URL,

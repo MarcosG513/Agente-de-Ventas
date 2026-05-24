@@ -1,8 +1,16 @@
 # Ignorar variables de entorno
 .env
 
-# Ignorar la base de datos de SQLite
+# Ignorar base de datos e historial de SQLite y sus logs de WAL
+*.db
+*.db-wal
+*.db-shm
 ventas.db
+historial.db
 
 # Ignorar carpetas del entorno de Python
 __pycache__/
+*.pyc
+venv/
+env/
+.venv/

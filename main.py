@@ -28,6 +28,11 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 APP_SECRET = os.environ.get("META_APP_SECRET", "")
 
+# Configuración de base de datos e historial para persistencia
+DB_PATH = os.environ.get("DB_PATH", "ventas.db")
+db_dir = os.path.dirname(DB_PATH)
+HISTORIAL_PATH = os.path.join(db_dir, "historial.db") if db_dir else "historial.db"
+
 # Función auxiliar para imprimir de forma segura en consolas con codificaciones limitadas (como Windows CP1252)
 def safe_print(message: str):
     try:
@@ -79,7 +84,7 @@ async def procesar_inteligencia_agente(texto_usuario: str, nombre_usuario: str, 
         import aiosqlite
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         
-        async with aiosqlite.connect("historial.db", isolation_level=None) as conn:
+        async with aiosqlite.connect(HISTORIAL_PATH, isolation_level=None) as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute("PRAGMA journal_mode=WAL")
                 await cursor.execute("PRAGMA synchronous=NORMAL")
@@ -257,7 +262,7 @@ async def obtener_historial_y_resumir(chat_id: str) -> str:
         import aiosqlite
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         
-        async with aiosqlite.connect("historial.db", isolation_level=None) as conn:
+        async with aiosqlite.connect(HISTORIAL_PATH, isolation_level=None) as conn:
             memory = AsyncSqliteSaver(conn)
             await memory.setup()
             graph = get_compiled_graph(memory)
