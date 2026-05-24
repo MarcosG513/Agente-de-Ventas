@@ -697,3 +697,27 @@ async def get_terminos():
 </body>
 </html>"""
     return HTMLResponse(content=html_content, status_code=200)
+
+
+@app.get("/eliminacion", response_class=HTMLResponse)
+async def get_eliminacion():
+    html_content = """<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Eliminación de Datos - Matelu Store</title><style>body{font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:800px;margin:0 auto;padding:20px;}h1,h2{color:#2b6cb0;}.step{background:#f4f4f4;padding:15px;border-left:4px solid #2b6cb0;margin-bottom:10px;}</style></head>
+<body>
+<h1>Instrucciones para la Eliminación de Datos de Usuario</h1>
+<p>En <strong>Matelu Store</strong> respetamos tu privacidad. Si deseas revocar tu consentimiento y solicitar la eliminación total y permanente de tu número de teléfono, historial de chat y cualquier otro dato asociado a nuestras interacciones en WhatsApp o Telegram, sigue estos pasos:</p>
+<div class="step">
+<strong>Paso 1:</strong> Envía un correo electrónico a la dirección de soporte oficial: <strong>matelu.store2@gmail.com</strong>
+</div>
+<div class="step">
+<strong>Paso 2:</strong> En el asunto del correo escribe: "Solicitud de Eliminación de Datos".
+</div>
+<div class="step">
+<strong>Paso 3:</strong> En el cuerpo del correo, indícanos el número de teléfono (con código de país) o el ID de usuario exacto desde el cual interactuaste con nuestro sistema.
+</div>
+<h2>Tiempo de Respuesta</h2>
+<p>Una vez recibida tu solicitud, nuestro equipo técnico purgará todos tus registros de la base de datos de producción en un plazo máximo de <strong>72 horas hábiles</strong>. Te enviaremos un correo de confirmación una vez que el proceso haya finalizado.</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content, status_code=200)
