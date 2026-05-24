@@ -158,11 +158,9 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
-    # Intentar agregar la columna last_phone_id por compatibilidad con bases de datos ya creadas
-    import aiosqlite
-    try:
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute("ALTER TABLE clientes ADD COLUMN last_phone_id TEXT")
-            await db.commit()
-    except Exception:
-        pass
+        # Intentar agregar la columna last_phone_id por compatibilidad con bases de datos ya creadas
+        from sqlalchemy import text
+        try:
+            await conn.execute(text("ALTER TABLE clientes ADD COLUMN last_phone_id TEXT"))
+        except Exception:
+            pass
