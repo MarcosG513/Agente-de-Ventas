@@ -442,22 +442,35 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                     # 1. Cargar el cliente
                     cliente = await obtener_o_crear_cliente(str(chat_id))
                     
-                    # 2. Si es el Administrador y está respondiendo a una alerta
+                    # 2. Si es el Administrador y está respondiendo a una alerta o mensaje del cliente
                     if str(chat_id) == str(ADMIN_CHAT_ID):
                         replied_message = message.get("reply_to_message", {})
                         replied_text = replied_message.get("text", "") or replied_message.get("caption", "")
-                        if replied_text and "🚨 ALERTA DE INTERVENCIÓN 🚨" in replied_text:
+                        if replied_text:
+                            target_client_id = None
                             import re
-                            match = re.search(r"👤 Cliente:.*\((\d+)\)", replied_text)
-                            if match:
-                                target_client_id = match.group(1)
+                            if "🚨 ALERTA DE INTERVENCIÓN 🚨" in replied_text:
+                                match = re.search(r"👤 Cliente:.*\((\d+)\)", replied_text)
+                                if match:
+                                    target_client_id = match.group(1)
+                            elif "💬 Mensaje de Cliente" in replied_text:
+                                match = re.search(r"💬 Mensaje de Cliente \((\d+)\)", replied_text)
+                                if match:
+                                    target_client_id = match.group(1)
+                                    
+                            if target_client_id:
                                 await send_telegram_message(target_client_id, user_text)
                                 await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente {target_client_id}.")
                                 return
                     
                     # 3. Silenciar si está pausado o esperando humano
                     if cliente.estado in ['esperando_humano', 'pausado'] and str(chat_id) != str(ADMIN_CHAT_ID):
-                        safe_print(f"Modo Silencio/Pausado: Cliente {chat_id} en estado '{cliente.estado}'. Ignorando respuesta automática.")
+                        safe_print(f"Modo Silencio/Pausado: Cliente {chat_id} en estado '{cliente.estado}'. Redireccionando mensaje al administrador.")
+                        
+                        # Enviar el mensaje del cliente al administrador
+                        admin_forward_text = f"💬 Mensaje de Cliente ({chat_id}):\n{user_text}"
+                        await send_telegram_message(str(ADMIN_CHAT_ID), admin_forward_text)
+                        
                         # Si envió foto, podemos seguir auditando (enviar al admin)
                         if file_id:
                             from_user = message.get("from", {})
