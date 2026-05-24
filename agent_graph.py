@@ -101,6 +101,7 @@ SYSTEM_PROMPT_TEMPLATE = """<instruction_set>
 • 🥈 3 Meses: [Inserta el precio aquí]
 • 🥇 6 Meses: [Inserta el precio aquí]
 • 🏆 1 Año: [Inserta el precio aquí]
+• 💎 18 Meses: [Inserta el precio aquí]
 
 💡 ¿Por qué dar el salto al plan Pro?
 ✅ Almacenamiento masivo: 5 TB para ti y hasta 5 personas más.

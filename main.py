@@ -371,10 +371,58 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
             # Función asíncrona interna para ejecutar en segundo plano y no bloquear la respuesta HTTP
             async def procesar_y_responder():
                 try:
-                    # Usamos chat_id como identificador único de hilo/cliente
-                    respuesta = await procesar_inteligencia_agente(user_text, str(chat_id), "telegram")
-                    if respuesta:
-                        await send_telegram_message(chat_id, respuesta)
+                    if user_text.strip().startswith("/start"):
+                        # Registrar/cargar cliente
+                        cliente = await obtener_o_crear_cliente(str(chat_id))
+                        if cliente.estado == 'esperando_humano':
+                            safe_print(f"Modo Silencio: Cliente {chat_id} esperando humano. Abortando procesamiento de /start.")
+                            return
+                        
+                        # Analizar argumentos de deep link
+                        parts = user_text.strip().split(" ", 1)
+                        param = parts[1].strip() if len(parts) > 1 else ""
+                        
+                        confirmacion = ""
+                        if param:
+                            plan_readable = ""
+                            if "1_mes" in param:
+                                plan_readable = "1 Mes"
+                            elif "1_ano" in param or "1_ano" in param:
+                                plan_readable = "1 Año"
+                            elif "3_meses" in param:
+                                plan_readable = "3 Meses"
+                            elif "6_meses" in param:
+                                plan_readable = "6 Meses"
+                            elif "18_meses" in param:
+                                plan_readable = "18 Meses"
+                            else:
+                                plan_readable = "nuestro plan Pro"
+                            
+                            confirmacion = f"¡Excelente! Veo que te interesa el plan de {plan_readable} de IA Pro. 🚀\n\n"
+                        
+                        welcome_text = (
+                            f"{confirmacion}"
+                            f"🚀 ¡Hola! Bienvenido a Matelu Digital.\n"
+                            f"¿Listo para potenciar tu productividad y creatividad con Inteligencia Artificial Premium?\n\n"
+                            f"🌟 NUESTRAS SUSCRIPCIONES GOOGLE AI PRO (5 TB):\n"
+                            f"• 🥉 1 Mes: 8000.0 Pesos\n"
+                            f"• 🥈 3 Meses: 21000.0 Pesos\n"
+                            f"• 🥇 6 Meses: 36000.0 Pesos\n"
+                            f"• 🏆 1 Año: 50000.0 Pesos\n"
+                            f"• 💎 18 Meses: 70000.0 Pesos\n\n"
+                            f"💡 ¿Por qué dar el salto al plan Pro?\n"
+                            f"✅ Almacenamiento masivo: 5 TB para ti y hasta 5 personas más.\n"
+                            f"✅ Memoria de genio: Lee, analiza y recuerda hasta 700 páginas de un solo golpe.\n"
+                            f"✅ Tu asistente 24/7: IA integrada directamente en tu Gmail, Docs y Sheets.\n\n"
+                            f"👉 ¿Con cuál de estos planes te gustaría empezar a trabajar sin límites hoy?"
+                        )
+                        
+                        await send_telegram_message(str(chat_id), welcome_text)
+                    else:
+                        # Usamos chat_id como identificador único de hilo/cliente
+                        respuesta = await procesar_inteligencia_agente(user_text, str(chat_id), "telegram")
+                        if respuesta:
+                            await send_telegram_message(chat_id, respuesta)
                         
                     # Si se recibió foto, enviar alerta al grupo de auditoría
                     if file_id:
