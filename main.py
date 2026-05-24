@@ -546,7 +546,9 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         welcome_back = "🤖 El asistente de IA ha vuelto a activarse. ¿En qué más puedo ayudarte?"
                         if es_numero_whatsapp(target_user_id):
                             from whatsapp_utils import enviar_mensaje_whatsapp
-                            await enviar_mensaje_whatsapp(target_user_id, welcome_back)
+                            cliente_db = await obtener_o_crear_cliente(target_user_id)
+                            target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                            await enviar_mensaje_whatsapp(target_user_id, welcome_back, phone_number_id=target_phone_id)
                         else:
                             await send_telegram_message(target_user_id, welcome_back)
                     else:
@@ -563,7 +565,9 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         transition_msg = "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento..."
                         if es_numero_whatsapp(target_user_id):
                             from whatsapp_utils import enviar_mensaje_whatsapp
-                            await enviar_mensaje_whatsapp(target_user_id, transition_msg)
+                            cliente_db = await obtener_o_crear_cliente(target_user_id)
+                            target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                            await enviar_mensaje_whatsapp(target_user_id, transition_msg, phone_number_id=target_phone_id)
                         else:
                             await send_telegram_message(target_user_id, transition_msg)
                     else:
@@ -578,7 +582,9 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         
                         if es_numero_whatsapp(target_user_id):
                             from whatsapp_utils import enviar_mensaje_whatsapp
-                            exito = await enviar_mensaje_whatsapp(target_user_id, mensaje_responder)
+                            cliente_db = await obtener_o_crear_cliente(target_user_id)
+                            target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                            exito = await enviar_mensaje_whatsapp(target_user_id, mensaje_responder, phone_number_id=target_phone_id)
                             if exito:
                                 await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado a WhatsApp {target_user_id}.")
                             else:
@@ -614,19 +620,22 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         if replied_text:
                             target_client_id = None
                             import re
-                            if "🚨 ALERTA DE INTERVENCIÓN 🚨" in replied_text:
-                                match = re.search(r"👤 Cliente:.*\((\d+)\)", replied_text)
-                                if match:
-                                    target_client_id = match.group(1)
-                            elif "💬 Mensaje de Cliente" in replied_text:
-                                match = re.search(r"💬 Mensaje de Cliente \((\d+)\)", replied_text)
-                                if match:
-                                    target_client_id = match.group(1)
+                            # Buscar cualquier número de cliente (patrón de dígitos entre paréntesis)
+                            match = re.search(r"\((?P<id>\d+)\)", replied_text)
+                            if match:
+                                target_client_id = match.group("id")
+                            else:
+                                # Fallback a buscar "Cliente: XXXXXX"
+                                match_cliente = re.search(r"(?:Cliente|👤 Cliente):\s*(?P<id>\d+)", replied_text)
+                                if match_cliente:
+                                    target_client_id = match_cliente.group("id")
                                     
                             if target_client_id:
                                 if es_numero_whatsapp(target_client_id):
                                     from whatsapp_utils import enviar_mensaje_whatsapp
-                                    exito = await enviar_mensaje_whatsapp(target_client_id, user_text)
+                                    cliente_db = await obtener_o_crear_cliente(target_client_id)
+                                    target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                                    exito = await enviar_mensaje_whatsapp(target_client_id, user_text, phone_number_id=target_phone_id)
                                     if exito:
                                         await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente WhatsApp {target_client_id}.")
                                     else:
@@ -719,6 +728,11 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                         
                         await send_telegram_message(str(chat_id), welcome_text)
                     else:
+                        # Si es el Administrador enviando un mensaje al grupo (sin comando válido ni respuesta válida), lo ignoramos
+                        if str(chat_id) == str(ADMIN_CHAT_ID):
+                            safe_print(">>> [TELEGRAM] Mensaje en chat de administración sin comando válido ni reply a cliente. Ignorado.")
+                            return
+                            
                         # Usamos chat_id como identificador único de hilo/cliente
                         respuesta = await procesar_inteligencia_agente(user_text, str(chat_id), "telegram")
                         if respuesta:
@@ -820,6 +834,12 @@ async def receive_whatsapp_webhook(
                             try:
                                 # 1. Verificar si el cliente está en modo silencio/pausa
                                 cliente = await obtener_o_crear_cliente(num)
+                                
+                                # Guardar el último phone_number_id para este cliente en base de datos
+                                if phone_id:
+                                    from database import actualizar_last_phone_id
+                                    await actualizar_last_phone_id(num, phone_id)
+                                    
                                 if cliente.estado in ['esperando_humano', 'pausado']:
                                     safe_print(f"Modo Silencio/Pausado (WhatsApp): Cliente {num} en estado '{cliente.estado}'. Redireccionando mensaje al administrador.")
                                     # Enviar el mensaje del cliente al administrador vía Telegram

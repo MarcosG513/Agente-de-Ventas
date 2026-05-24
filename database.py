@@ -55,6 +55,7 @@ class Cliente(Base):
     telefono: Mapped[str] = mapped_column(String, primary_key=True)
     estado: Mapped[str] = mapped_column(String, server_default='bot_activo', default='bot_activo')
     es_nuevo: Mapped[bool] = mapped_column(Boolean, server_default='1', default=True)
+    last_phone_id: Mapped[str] = mapped_column(String, nullable=True)
 
 # Índice explícito solicitado para el teléfono del cliente
 Index('idx_clientes_telefono', Cliente.telefono)
@@ -143,7 +144,25 @@ async def registrar_comprobante_pago(customer_id: str, media_id: str, monto: str
             )
             session.add(proof)
 
+async def actualizar_last_phone_id(telefono: str, last_phone_id: str):
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            stmt = select(Cliente).where(Cliente.telefono == telefono)
+            result = await session.execute(stmt)
+            cliente = result.scalar_one_or_none()
+            if cliente:
+                cliente.last_phone_id = last_phone_id
+
 # Inicializador del modelo en DB
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+    # Intentar agregar la columna last_phone_id por compatibilidad con bases de datos ya creadas
+    import aiosqlite
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("ALTER TABLE clientes ADD COLUMN last_phone_id TEXT")
+            await db.commit()
+    except Exception:
+        pass
