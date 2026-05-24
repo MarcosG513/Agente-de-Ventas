@@ -11,6 +11,7 @@ from datetime import datetime
 load_dotenv()
 
 from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks, Header, Query
+from fastapi.responses import HTMLResponse
 from agent_graph import get_compiled_graph
 from langchain_core.messages import HumanMessage, AIMessage
 from database import init_db, AsyncSessionLocal, Catalog, obtener_o_crear_cliente, actualizar_estado_cliente
@@ -659,3 +660,40 @@ async def receive_whatsapp_webhook(
         safe_print(f">>> [WHATSAPP WEBHOOK] Error general procesando webhook: {e}")
         
     return {"status": "ok"}
+
+
+@app.get("/privacidad", response_class=HTMLResponse)
+async def get_privacidad():
+    html_content = """<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Política de Privacidad - Matelu Store</title><style>body{font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:800px;margin:0 auto;padding:20px;}h1,h2{color:#2b6cb0;}</style></head>
+<body>
+<h1>Política de Privacidad y Tratamiento de Datos</h1>
+<p><strong>Responsable:</strong> Marcos Guillermo Mogollón Ortega | <strong>Comercio:</strong> Matelu Store | <strong>Contacto:</strong> matelu.store2@gmail.com</p>
+<h2>1. Datos Recopilados</h2>
+<p>Recolectamos números de teléfono, identificadores de usuario, historiales de chat y comprobantes de pago compartidos voluntariamente en WhatsApp y Telegram para proveer soporte técnico y ventas automatizadas mediante nuestro bot de Inteligencia Artificial.</p>
+<h2>2. Finalidad y Almacenamiento</h2>
+<p>Los datos son almacenados en servidores cifrados y se utilizan estrictamente para mantener el contexto de la conversación, gestionar activaciones de servicios y enviar notificaciones operativas. Los mensajes son procesados por APIs de Inteligencia artificial bajo protocolos seguros.</p>
+<h2>3. Eliminación de Datos de Usuario (Habeas Data)</h2>
+<p>De conformidad con la Ley 1581 de 2012, para revocar la autorización o solicitar la <strong>eliminación permanente y total</strong> de sus datos, el usuario debe enviar un correo electrónico a <strong>matelu.store2@gmail.com</strong> indicando su número de teléfono. Los registros del servidor serán purgados en un máximo de 72 horas hábiles.</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content, status_code=200)
+
+
+@app.get("/terminos", response_class=HTMLResponse)
+async def get_terminos():
+    html_content = """<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Términos del Servicio - Matelu Store</title><style>body{font-family:Arial,sans-serif;line-height:1.6;color:#333;max-width:800px;margin:0 auto;padding:20px;}h1,h2{color:#2b6cb0;}</style></head>
+<body>
+<h1>Términos y Condiciones del Servicio Automatizado</h1>
+<h2>1. Aceptación</h2>
+<p>Al interactuar con nuestros agentes oficiales en WhatsApp y Telegram, el usuario acepta ser atendido por un sistema automatizado de Inteligencia Artificial.</p>
+<h2>2. Reglas de Activación de Servicios</h2>
+<p><strong>IMPORTANTE:</strong> La provisión de información sobre cuentas (ej. billeteras digitales) es de carácter informativo. <strong>Ningún servicio, acceso o producto será activado o entregado hasta que el usuario haya enviado por este canal un comprobante de pago válido</strong> y este haya sido validado administrativamente.</p>
+<h2>3. Uso Adecuado</h2>
+<p>Queda prohibido enviar spam, ataques informáticos o inyecciones de código al agente. El incumplimiento resultará en un bloqueo permanente del usuario.</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content, status_code=200)
