@@ -26,6 +26,7 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "IA_matelu_2026")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
+ADMIN_TELEGRAM_ID = os.environ.get("ADMIN_TELEGRAM_ID", ADMIN_CHAT_ID)
 APP_SECRET = os.environ.get("META_APP_SECRET", "")
 
 # Función auxiliar para imprimir de forma segura en consolas con codificaciones limitadas (como Windows CP1252)
@@ -71,8 +72,8 @@ async def procesar_inteligencia_agente(texto_usuario: str, nombre_usuario: str, 
     try:
         # 1. Verificar si el cliente está en modo silencio
         cliente = await obtener_o_crear_cliente(nombre_usuario)
-        if cliente.estado == 'esperando_humano':
-            safe_print(f"Modo Silencio: Cliente {nombre_usuario} esperando humano. Abortando procesamiento.")
+        if cliente.estado in ['esperando_humano', 'pausado']:
+            safe_print(f"Modo Silencio: Cliente {nombre_usuario} en estado '{cliente.estado}'. Abortando procesamiento.")
             return ""
 
         # 2. Conexión segura a SQLite para LangGraph checkpointer
@@ -247,6 +248,50 @@ async def enviar_alerta_auditoria(chat_id_cliente: str, nombre_cliente: str, fil
     except Exception as e:
         safe_print(f">>> [AUDITORÍA] Excepción al intentar enviar alerta al administrador: {e}")
 
+def detectar_intencion_humano(texto: str) -> bool:
+    palabras_clave = ["asesor", "persona", "soporte", "hablar con alguien", "humano", "atención humana", "ayuda humana"]
+    texto_lower = texto.lower()
+    return any(p in texto_lower for p in palabras_clave)
+
+async def obtener_historial_y_resumir(chat_id: str) -> str:
+    try:
+        import aiosqlite
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        
+        async with aiosqlite.connect("ventas.db", isolation_level=None) as conn:
+            memory = AsyncSqliteSaver(conn)
+            await memory.setup()
+            graph = get_compiled_graph(memory)
+            config = {"configurable": {"thread_id": chat_id}}
+            state = await graph.aget_state(config)
+            
+            messages = state.values.get("messages", []) if state and state.values else []
+            
+            if not messages:
+                return "El cliente solicitó soporte directo sin historial previo."
+                
+            # Formatear el historial para el LLM
+            historial_formateado = ""
+            for msg in messages:
+                from langchain_core.messages import HumanMessage
+                role = "Cliente" if isinstance(msg, HumanMessage) else "Bot"
+                historial_formateado += f"{role}: {msg.content}\n"
+                
+            # Llamar a Gemini para resumir
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            llm_resumidor = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+            prompt = (
+                f"Analiza la siguiente conversación de soporte y genera un resumen conciso "
+                f"explicando qué plan estaba mirando el cliente o cuál es su duda exacta:\n\n"
+                f"{historial_formateado}\n"
+                f"Responde de forma ultra concisa (máximo 3 líneas)."
+            )
+            response = await llm_resumidor.ainvoke([HumanMessage(content=prompt)])
+            return response.content.strip()
+    except Exception as e:
+        safe_print(f"Error al generar resumen del historial: {e}")
+        return "No se pudo recuperar el historial de la conversación."
+
 async def send_telegram_message(chat_id: str, texto: str):
     """
     Envía un mensaje de texto de vuelta al usuario en Telegram utilizando el bot token configurado.
@@ -356,6 +401,30 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
         
         if "text" in message:
             user_text = message.get("text", "")
+            
+            # Interceptar comandos de control del Admin
+            if str(chat_id) == str(ADMIN_TELEGRAM_ID):
+                if user_text.strip().startswith("/reanudar"):
+                    parts = user_text.strip().split(" ")
+                    if len(parts) > 1:
+                        target_user_id = parts[1].strip()
+                        await actualizar_estado_cliente(target_user_id, 'bot_activo')
+                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), f"✅ Asistente de IA reactivado para el cliente {target_user_id}.")
+                        await send_telegram_message(target_user_id, "🤖 El asistente de IA ha vuelto a activarse. ¿En qué más puedo ayudarte?")
+                    else:
+                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), "⚠️ Formato incorrecto. Usa: /reanudar <user_id>")
+                    return {"status": "ok"}
+                    
+                elif user_text.strip().startswith("/pausar"):
+                    parts = user_text.strip().split(" ")
+                    if len(parts) > 1:
+                        target_user_id = parts[1].strip()
+                        await actualizar_estado_cliente(target_user_id, 'pausado')
+                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), f"✅ Asistente de IA pausado para el cliente {target_user_id}. Modo manual activo.")
+                        await send_telegram_message(target_user_id, "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento...")
+                    else:
+                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), "⚠️ Formato incorrecto. Usa: /pausar <user_id>")
+                    return {"status": "ok"}
         elif "photo" in message or "document" in message:
             caption = message.get("caption", "").strip()
             if caption:
@@ -371,13 +440,57 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
             # Función asíncrona interna para ejecutar en segundo plano y no bloquear la respuesta HTTP
             async def procesar_y_responder():
                 try:
-                    if user_text.strip().startswith("/start"):
-                        # Registrar/cargar cliente
-                        cliente = await obtener_o_crear_cliente(str(chat_id))
-                        if cliente.estado == 'esperando_humano':
-                            safe_print(f"Modo Silencio: Cliente {chat_id} esperando humano. Abortando procesamiento de /start.")
-                            return
+                    # 1. Cargar el cliente
+                    cliente = await obtener_o_crear_cliente(str(chat_id))
+                    
+                    # 2. Si es el Administrador y está respondiendo a una alerta
+                    if str(chat_id) == str(ADMIN_TELEGRAM_ID):
+                        replied_message = message.get("reply_to_message", {})
+                        replied_text = replied_message.get("text", "") or replied_message.get("caption", "")
+                        if replied_text and "🚨 ALERTA DE INTERVENCIÓN 🚨" in replied_text:
+                            import re
+                            match = re.search(r"👤 Cliente:.*\((\d+)\)", replied_text)
+                            if match:
+                                target_client_id = match.group(1)
+                                await send_telegram_message(target_client_id, user_text)
+                                await send_telegram_message(str(ADMIN_TELEGRAM_ID), f"✅ Mensaje enviado al cliente {target_client_id}.")
+                                return
+                    
+                    # 3. Silenciar si está pausado o esperando humano
+                    if cliente.estado in ['esperando_humano', 'pausado'] and str(chat_id) != str(ADMIN_TELEGRAM_ID):
+                        safe_print(f"Modo Silencio/Pausado: Cliente {chat_id} en estado '{cliente.estado}'. Ignorando respuesta automática.")
+                        # Si envió foto, podemos seguir auditando (enviar al admin)
+                        if file_id:
+                            from_user = message.get("from", {})
+                            first_name = from_user.get("first_name", "Usuario")
+                            await enviar_alerta_auditoria(str(chat_id), first_name, file_id)
+                        return
+
+                    # 4. Detección de intención de soporte humano
+                    if detectar_intencion_humano(user_text) and str(chat_id) != str(ADMIN_TELEGRAM_ID):
+                        # Cambiar estado a 'pausado'
+                        await actualizar_estado_cliente(str(chat_id), 'pausado')
                         
+                        # Mensaje de transición al cliente
+                        await send_telegram_message(str(chat_id), "Comprendo perfectamente. Voy a transferirte con Marcos, nuestro especialista, para que te asista de forma personalizada. Dame un momento...")
+                        
+                        # Generar resumen del historial
+                        from_user = message.get("from", {})
+                        first_name = from_user.get("first_name", "")
+                        resumen_contexto = await obtener_historial_y_resumir(str(chat_id))
+                        
+                        # Enviar alerta al admin
+                        nombre_formateado = f"{first_name} ({chat_id})" if first_name else f"Cliente ({chat_id})"
+                        alerta_text = (
+                            f"🚨 ALERTA DE INTERVENCIÓN 🚨\n"
+                            f"👤 Cliente: {nombre_formateado}\n"
+                            f"📝 Contexto: {resumen_contexto}"
+                        )
+                        await send_telegram_message(str(ADMIN_TELEGRAM_ID), alerta_text)
+                        return
+                    
+                    # 5. Manejo normal de /start y otros mensajes
+                    if user_text.strip().startswith("/start"):
                         # Analizar argumentos de deep link
                         parts = user_text.strip().split(" ", 1)
                         param = parts[1].strip() if len(parts) > 1 else ""
