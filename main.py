@@ -66,7 +66,13 @@ async def startup_event():
             await session.commit()
 
 # --- CEREBRO ÚNICO ---
-async def procesar_inteligencia_agente(texto_usuario: str, nombre_usuario: str, plataforma: str) -> str:
+async def procesar_inteligencia_agente(
+    texto_usuario: str,
+    nombre_usuario: str,
+    plataforma: str,
+    image_media_id: str = None,
+    audio_media_id: str = None
+) -> str:
     """
     Cerebro único que centraliza la lógica de procesamiento con el modelo y flujo de agentes.
     Conecta directamente con la invocación de LangGraph/Gemini y utiliza el checkpointer de SQLite WAL.
@@ -101,10 +107,11 @@ async def procesar_inteligencia_agente(texto_usuario: str, nombre_usuario: str, 
             # Inicializar o actualizar el estado del agente
             state_update = {
                 "phone_number": nombre_usuario,
-                "audio_media_id": None,
-                "image_media_id": None,
+                "audio_media_id": audio_media_id,
+                "image_media_id": image_media_id,
                 "messages": [HumanMessage(content=texto_usuario)]
             }
+
             
             # Invocar al agente de LangGraph
             final_state = await graph.ainvoke(state_update, config=config)
@@ -632,29 +639,51 @@ async def receive_whatsapp_webhook(
                         
                     msg_type = msg.get("type")
                     text_body = ""
+                    img_id = None
+                    aud_id = None
                     
                     if msg_type == "text":
                         text_body = msg.get("text", {}).get("body", "")
                     elif msg_type == "image":
                         text_body = "[Envié un comprobante de pago o imagen]"
+                        img_id = msg.get("image", {}).get("id")
                     elif msg_type == "audio":
                         text_body = "[Audio Recibido]"
+                        aud_id = msg.get("audio", {}).get("id")
                     else:
                         text_body = f"[Mensaje de tipo: {msg_type}]"
                         
                     if phone_number and text_body:
                         # Procesamiento asíncrono en background
-                        async def procesar_y_loguear_whatsapp(num, msg_txt):
+                        async def procesar_y_loguear_whatsapp(num, msg_txt, image_media_id=None, audio_media_id=None):
                             try:
-                                respuesta = await procesar_inteligencia_agente(msg_txt, num, "whatsapp")
+                                # 1. Verificar si el cliente está en modo silencio/pausa
+                                cliente = await obtener_o_crear_cliente(num)
+                                if cliente.estado in ['esperando_humano', 'pausado']:
+                                    safe_print(f"Modo Silencio/Pausado (WhatsApp): Cliente {num} en estado '{cliente.estado}'. Redireccionando mensaje al administrador.")
+                                    # Enviar el mensaje del cliente al administrador vía Telegram
+                                    admin_forward_text = f"💬 Mensaje de Cliente ({num}):\n{msg_txt}"
+                                    await send_telegram_message(str(ADMIN_CHAT_ID), admin_forward_text)
+                                    return
+
+                                # 2. Procesar respuesta del agente
+                                respuesta = await procesar_inteligencia_agente(
+                                    msg_txt, num, "whatsapp",
+                                    image_media_id=image_media_id,
+                                    audio_media_id=audio_media_id
+                                )
                                 if respuesta:
-                                    # TODO: Implementar la función de envío real utilizando WHATSAPP_TOKEN y WHATSAPP_PHONE_ID
-                                    safe_print(f">>> [TODO] Enviar respuesta a WhatsApp {num} usando WHATSAPP_TOKEN y WHATSAPP_PHONE_ID")
-                                    safe_print(f"    Respuesta que se enviará: {respuesta}")
+                                    from whatsapp_utils import enviar_mensaje_whatsapp
+                                    exito = await enviar_mensaje_whatsapp(num, respuesta)
+                                    if exito:
+                                        safe_print(f">>> [WHATSAPP] Mensaje enviado a {num}")
+                                    else:
+                                        safe_print(f">>> [WHATSAPP] Error enviando mensaje a {num}")
                             except Exception as ex:
                                 safe_print(f"Error procesando en WhatsApp background: {ex}")
                                 
-                        background_tasks.add_task(procesar_y_loguear_whatsapp, phone_number, text_body)
+                        background_tasks.add_task(procesar_y_loguear_whatsapp, phone_number, text_body, img_id, aud_id)
+
                         
     except Exception as e:
         safe_print(f">>> [WHATSAPP WEBHOOK] Error general procesando webhook: {e}")

@@ -41,3 +41,54 @@ async def descargar_imagen_whatsapp(image_id: str) -> str:
         image_bytes = io.BytesIO(image_res.content).getvalue()
     
     return base64.b64encode(image_bytes).decode('utf-8')
+
+
+async def enviar_mensaje_whatsapp(to_phone: str, text: str) -> bool:
+    """
+    Envía un mensaje de texto al cliente vía WhatsApp Cloud API.
+    Implementa reintento exponencial en caso de fallo.
+    """
+    import asyncio
+    whatsapp_phone_id = os.environ.get("WHATSAPP_PHONE_ID", "")
+    whatsapp_token = os.environ.get("WHATSAPP_TOKEN", "")
+    
+    if not whatsapp_phone_id or not whatsapp_token:
+        print(">>> [WHATSAPP UTILS] WHATSAPP_PHONE_ID o WHATSAPP_TOKEN no configurados en las variables de entorno.")
+        return False
+        
+    url = f"https://graph.facebook.com/v18.0/{whatsapp_phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {whatsapp_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_phone,
+        "type": "text",
+        "text": {
+            "preview_url": False,
+            "body": text
+        }
+    }
+    
+    max_retries = 3
+    delay = 1.0  # Retardo inicial en segundos
+    
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=payload, headers=headers, timeout=10.0)
+                if response.status_code in (200, 201):
+                    return True
+                else:
+                    print(f">>> [WHATSAPP UTILS] Intento {attempt + 1} falló con status {response.status_code}: {response.text}")
+        except Exception as e:
+            print(f">>> [WHATSAPP UTILS] Excepción en intento {attempt + 1}: {e}")
+            
+        if attempt < max_retries - 1:
+            await asyncio.sleep(delay)
+            delay *= 2  # Reintento exponencial
+            
+    return False
+
