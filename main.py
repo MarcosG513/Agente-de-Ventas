@@ -420,7 +420,7 @@ async def obtener_historial_y_resumir(chat_id: str) -> str:
         safe_print(f"Error al generar resumen del historial: {e}")
         return "No se pudo recuperar el historial de la conversación."
 
-async def send_telegram_message(chat_id: str, texto: str):
+async def send_telegram_message(chat_id: str, texto: str, reply_markup: dict = None):
     """
     Envía un mensaje de texto de vuelta al usuario en Telegram utilizando el bot token configurado.
     """
@@ -437,7 +437,9 @@ async def send_telegram_message(chat_id: str, texto: str):
         "text": saneado,
         "parse_mode": "Markdown"
     }
-    
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+        
     # Envío asíncrono con httpx con bloque try/except robusto y fallback para errores de formateo
     try:
         async with httpx.AsyncClient() as client:
@@ -453,6 +455,8 @@ async def send_telegram_message(chat_id: str, texto: str):
                         "chat_id": chat_id,
                         "text": saneado
                     }
+                    if reply_markup:
+                        payload_fallback["reply_markup"] = reply_markup
                     res_fb = await client.post(url, json=payload_fallback, timeout=10.0)
                     res_fb.raise_for_status()
                     safe_print(f">>> [TELEGRAM] Mensaje enviado correctamente usando fallback de texto plano a chat_id: {chat_id}")
@@ -493,16 +497,51 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                 
                 async def procesar_callback():
                     try:
-                        # Responder al cliente
-                        if action == "aprobar":
-                            msg_ok = "✅ Tu pago ha sido aprobado. En breve recibirás tu licencia."
+                        # 1. Caso Especial: Suscrito/Activación manual confirmada
+                        if action == "suscrito":
+                            msg_close = "¡Listo! Tu suscripción ya ha sido procesada de forma manual. Por favor, revisa la bandeja de entrada del correo Gmail que nos proporcionaste. Verás una invitación para unirte al grupo familiar; debes aceptarla para empezar a disfrutar del servicio. ¡Muchas gracias por tu compra!"
+                            await actualizar_estado_cliente(chat_id_cliente, 'completado')
                             if platform == "wa":
                                 from whatsapp_utils import enviar_mensaje_whatsapp
                                 cliente_db = await obtener_o_crear_cliente(chat_id_cliente)
                                 target_phone_id = cliente_db.last_phone_id if cliente_db else None
-                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_ok, phone_number_id=target_phone_id)
+                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_close, phone_number_id=target_phone_id)
                             else:
-                                await send_telegram_message(chat_id_cliente, msg_ok)
+                                await send_telegram_message(chat_id_cliente, msg_close)
+                            
+                            # Confirmar el click al administrador
+                            answer_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+                            answer_payload = {
+                                "callback_query_id": callback_query_id,
+                                "text": "Cliente activado y marcado como COMPLETADO."
+                            }
+                            async with httpx.AsyncClient() as client:
+                                await client.post(answer_url, json=answer_payload, timeout=10.0)
+                                
+                            # Editar el mensaje original para remover el botón
+                            replied_text = message.get("text", "")
+                            edit_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+                            edit_payload = {
+                                "chat_id": chat_id_admin,
+                                "message_id": message_id,
+                                "text": f"{replied_text}\n\n[PROCESADO / ACTIVADO]",
+                                "reply_markup": {"inline_keyboard": []}
+                            }
+                            async with httpx.AsyncClient() as client:
+                                await client.post(edit_url, json=edit_payload, timeout=10.0)
+                            return
+
+                        # 2. Casos de Auditoría de Pago (Aprobar / Rechazar)
+                        if action == "aprobar":
+                            await actualizar_estado_cliente(chat_id_cliente, 'esperando_correo')
+                            msg_prompt = "¡Tu pago ha sido verificado con éxito! 🎉 Para proceder con la activación de tu servicio, por favor escríbeme a continuación tu correo electrónico de Gmail (ejemplo: usuario@gmail.com)."
+                            if platform == "wa":
+                                from whatsapp_utils import enviar_mensaje_whatsapp
+                                cliente_db = await obtener_o_crear_cliente(chat_id_cliente)
+                                target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                                await enviar_mensaje_whatsapp(chat_id_cliente, msg_prompt, phone_number_id=target_phone_id)
+                            else:
+                                await send_telegram_message(chat_id_cliente, msg_prompt)
                         elif action == "rechazar":
                             msg_fail = "❌ Tu comprobante de pago no ha podido ser verificado o no es válido. Por favor, asegúrate de enviar el comprobante correcto y legible."
                             if platform == "wa":
@@ -611,6 +650,25 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                     else:
                         await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /responder <user_id> <mensaje>")
                     return {"status": "ok"}
+                    
+                elif user_text.strip().startswith("/suscrito"):
+                    parts = user_text.strip().split(" ")
+                    if len(parts) > 1:
+                        target_user_id = parts[1].strip()
+                        await actualizar_estado_cliente(target_user_id, 'completado')
+                        await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Cliente {target_user_id} marcado como COMPLETADO.")
+                        
+                        msg_close = "¡Listo! Tu suscripción ya ha sido procesada de forma manual. Por favor, revisa la bandeja de entrada del correo Gmail que nos proporcionaste. Verás una invitación para unirte al grupo familiar; debes aceptarla para empezar a disfrutar del servicio. ¡Muchas gracias por tu compra!"
+                        if es_numero_whatsapp(target_user_id):
+                            from whatsapp_utils import enviar_mensaje_whatsapp
+                            cliente_db = await obtener_o_crear_cliente(target_user_id)
+                            target_phone_id = cliente_db.last_phone_id if cliente_db else None
+                            await enviar_mensaje_whatsapp(target_user_id, msg_close, phone_number_id=target_phone_id)
+                        else:
+                            await send_telegram_message(target_user_id, msg_close)
+                    else:
+                        await send_telegram_message(str(ADMIN_CHAT_ID), "⚠️ Formato incorrecto. Usa: /suscrito <user_id>")
+                    return {"status": "ok"}
         elif "photo" in message or "document" in message:
             caption = message.get("caption", "").strip()
             if caption:
@@ -661,8 +719,43 @@ async def receive_telegram_webhook(request: Request, background_tasks: Backgroun
                                     await send_telegram_message(str(ADMIN_CHAT_ID), f"✅ Mensaje enviado al cliente Telegram {target_client_id}.")
                                 return
                     
-                    # 3. Silenciar si está pausado o esperando humano
-                    if cliente.estado in ['esperando_humano', 'pausado'] and str(chat_id) != str(ADMIN_CHAT_ID):
+                    # 1.1 Si el estado es esperando_correo
+                    if cliente.estado == 'esperando_correo' and str(chat_id) != str(ADMIN_CHAT_ID):
+                        import re
+                        email_candidate = user_text.strip()
+                        email_regex = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
+                        if re.match(email_regex, email_candidate):
+                            from database import guardar_email_cliente
+                            await guardar_email_cliente(str(chat_id), email_candidate)
+                            await actualizar_estado_cliente(str(chat_id), 'esperando_activacion')
+                            
+                            # Notificar al administrador en Telegram con un botón inline para confirmar
+                            alerta_tg = (
+                                f"📧 NUEVO CORREO RECIBIDO\n"
+                                f"Cliente: {chat_id}\n"
+                                f"Gmail: {email_candidate}\n"
+                                f"[Proceder con la suscripción manual en el grupo familiar]"
+                            )
+                            reply_markup = {
+                                "inline_keyboard": [
+                                    [
+                                        {"text": "✅ Marcar como Suscrito", "callback_data": f"suscrito_tg_{chat_id}"}
+                                    ]
+                                ]
+                            }
+                            await send_telegram_message(str(ADMIN_CHAT_ID), alerta_tg, reply_markup=reply_markup)
+                            
+                            # Enviar confirmación al cliente por Telegram
+                            msg_confirm = "¡Perfecto! He recibido tu correo de Gmail. Nuestro equipo procederá ahora con la activación manual. Te avisaremos por aquí tan pronto esté listo. ¡Muchas gracias! 🚀"
+                            await send_telegram_message(str(chat_id), msg_confirm)
+                        else:
+                            # Correo inválido
+                            msg_error = "El correo electrónico ingresado no parece ser válido. Por favor, asegúrate de escribir tu correo de Gmail correctamente (ejemplo: usuario@gmail.com) para poder continuar con tu activación. 💡"
+                            await send_telegram_message(str(chat_id), msg_error)
+                        return
+
+                    # 3. Silenciar si está pausado, esperando humano o esperando activación
+                    if cliente.estado in ['esperando_humano', 'pausado', 'esperando_activacion'] and str(chat_id) != str(ADMIN_CHAT_ID):
                         safe_print(f"Modo Silencio/Pausado: Cliente {chat_id} en estado '{cliente.estado}'. Redireccionando mensaje al administrador.")
                         
                         # Enviar el mensaje del cliente al administrador
@@ -856,7 +949,43 @@ async def receive_whatsapp_webhook(
                                     from database import actualizar_last_phone_id
                                     await actualizar_last_phone_id(num, phone_id)
                                     
-                                if cliente.estado in ['esperando_humano', 'pausado']:
+                                if cliente.estado == 'esperando_correo':
+                                    import re
+                                    email_candidate = msg_txt.strip()
+                                    email_regex = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
+                                    if re.match(email_regex, email_candidate):
+                                        from database import guardar_email_cliente
+                                        await guardar_email_cliente(num, email_candidate)
+                                        await actualizar_estado_cliente(num, 'esperando_activacion')
+                                        
+                                        # Notificar al administrador en Telegram con un botón inline para confirmar
+                                        alerta_tg = (
+                                            f"📧 NUEVO CORREO RECIBIDO\n"
+                                            f"Cliente: +{num}\n"
+                                            f"Gmail: {email_candidate}\n"
+                                            f"[Proceder con la suscripción manual en el grupo familiar]"
+                                        )
+                                        reply_markup = {
+                                            "inline_keyboard": [
+                                                [
+                                                    {"text": "✅ Marcar como Suscrito", "callback_data": f"suscrito_wa_{num}"}
+                                                ]
+                                            ]
+                                        }
+                                        await send_telegram_message(str(ADMIN_CHAT_ID), alerta_tg, reply_markup=reply_markup)
+                                        
+                                        # Enviar confirmación al cliente por WhatsApp
+                                        msg_confirm = "¡Perfecto! He recibido tu correo de Gmail. Nuestro equipo procederá ahora con la activación manual. Te avisaremos por aquí tan pronto esté listo. ¡Muchas gracias! 🚀"
+                                        from whatsapp_utils import enviar_mensaje_whatsapp
+                                        await enviar_mensaje_whatsapp(num, msg_confirm, phone_number_id=phone_id)
+                                    else:
+                                        # Correo inválido
+                                        msg_error = "El correo electrónico ingresado no parece ser válido. Por favor, asegúrate de escribir tu correo de Gmail correctamente (ejemplo: usuario@gmail.com) para poder continuar con tu activación. 💡"
+                                        from whatsapp_utils import enviar_mensaje_whatsapp
+                                        await enviar_mensaje_whatsapp(num, msg_error, phone_number_id=phone_id)
+                                    return
+                                    
+                                if cliente.estado in ['esperando_humano', 'pausado', 'esperando_activacion']:
                                     safe_print(f"Modo Silencio/Pausado (WhatsApp): Cliente {num} en estado '{cliente.estado}'. Redireccionando mensaje al administrador.")
                                     # Enviar el mensaje del cliente al administrador vía Telegram
                                     admin_forward_text = f"💬 Mensaje de Cliente ({num}):\n{msg_txt}"

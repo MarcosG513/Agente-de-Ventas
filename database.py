@@ -56,6 +56,7 @@ class Cliente(Base):
     estado: Mapped[str] = mapped_column(String, server_default='bot_activo', default='bot_activo')
     es_nuevo: Mapped[bool] = mapped_column(Boolean, server_default='1', default=True)
     last_phone_id: Mapped[str] = mapped_column(String, nullable=True)
+    email: Mapped[str] = mapped_column(String, nullable=True)
 
 # Índice explícito solicitado para el teléfono del cliente
 Index('idx_clientes_telefono', Cliente.telefono)
@@ -153,6 +154,15 @@ async def actualizar_last_phone_id(telefono: str, last_phone_id: str):
             if cliente:
                 cliente.last_phone_id = last_phone_id
 
+async def guardar_email_cliente(telefono: str, email: str):
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            stmt = select(Cliente).where(Cliente.telefono == telefono)
+            result = await session.execute(stmt)
+            cliente = result.scalar_one_or_none()
+            if cliente:
+                cliente.email = email
+
 # Inicializador del modelo en DB
 async def init_db():
     async with engine.begin() as conn:
@@ -162,5 +172,11 @@ async def init_db():
         from sqlalchemy import text
         try:
             await conn.execute(text("ALTER TABLE clientes ADD COLUMN last_phone_id TEXT"))
+        except Exception:
+            pass
+            
+        # Intentar agregar la columna email por compatibilidad con bases de datos ya creadas
+        try:
+            await conn.execute(text("ALTER TABLE clientes ADD COLUMN email TEXT"))
         except Exception:
             pass
